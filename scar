@@ -1,0 +1,559 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Carp;
+use Pod::Usage qw( pod2usage );
+use Getopt::Long qw( :config gnu_getopt );
+use English qw( -no_match_vars );
+my $VERSION = '0.0.1';
+use IO::Socket::INET;
+use Cwd qw< cwd >;
+use File::Spec::Functions qw< splitpath splitdir catdir catpath >;
+use Sys::Hostname qw< hostname >;
+use Encode qw< encode decode >;
+
+my %config = (root => cwd(),);
+GetOptions(
+   \%config,
+   qw(
+     usage! help! man! version!
+     host|h=s
+     port|p=i
+     root|r=s
+     )
+) or pod2usage(-verbose => 99, -sections => 'USAGE');
+pod2usage(message => "$0 $VERSION", -verbose => 99, -sections => ' ')
+  if $config{version};
+pod2usage(-verbose => 99, -sections => 'USAGE') if $config{usage};
+pod2usage(-verbose => 99, -sections => 'USAGE|EXAMPLES|OPTIONS')
+  if $config{help};
+pod2usage(-verbose => 2) if $config{man};
+
+# Script implementation here
+my ($volume, $dirs) = splitpath($config{root}, 'no-file');
+my @root = ($volume, splitdir($dirs));
+binmode STDERR, ':utf8';
+
+my %name_for = (
+   host => 'LocalHost',
+   port => 'LocalPort',
+);
+my %params = (
+   ReuseAddr => 1,
+   Proto     => 'tcp',
+   Listen    => 2,
+   map { $name_for{$_} => $config{$_} }
+     grep { exists $config{$_} } qw< host port >
+);
+my $server = IO::Socket::INET->new(%params);
+
+my $hostname = $server->sockhost();
+$hostname = hostname() if $hostname eq '0.0.0.0';
+print {*STDERR} "server started, you can connect to http://$hostname:",
+  $server->sockport(), "/\n";
+
+while (my $client = $server->accept()) {
+   my $request = parse_request($client);
+   my $local_path = local_path($request->{path}, @root);
+   print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
+     $client->peerport(),
+     " [$request->{path}] => [$local_path]\n";
+   if (!-r $local_path) {
+      serve_error($request, '404 Not Found');
+   }
+   elsif (-d $local_path) {
+      serve_directory($request, $local_path);
+   }
+   else {
+      serve_file($request, $local_path);
+   }
+} ## end while (my $client = $server...
+
+sub parse_request {
+   my ($client) = @_;
+   (my $preamble = <$client>) =~ s/\x0D\x0A\z//mxs;
+   my ($method, $path, $version) = split /\s+/, $preamble;
+
+   my (@headers);
+   while (<$client>) {
+      s/\x0D\x0A\z//mxs;
+      last unless length $_;
+      if (s{\A \s+}{ }mxs) {
+         $headers[-1][1] .= $_;
+      }
+      else {
+         push @headers, [split /\s* : \s*/mxs, $_, 2];
+      }
+   } ## end while (<$client>)
+
+   return {
+      preamble     => $preamble,
+      method       => $method,
+      encoded_path => $path,
+      path         => urldecode($path),
+      version      => $version,
+      headers      => \@headers,
+      client       => $client,
+   };
+} ## end sub parse_request
+
+sub serve_error {
+   my ($request, $code) = @_;
+   open my $fh, '<', \$code;
+   return _serve(
+      $request,
+      {
+         code    => $code,
+         headers => [['Content-Type' => "text/plain"]],
+         fh      => $fh,
+      }
+   );
+} ## end sub serve_error
+
+sub serve_directory {
+   my ($request, $path) = @_;
+   my $buffer       = '';
+   my $request_path = html_text($request->{path});
+
+   open my $ofh, '>:encoding(UTF-8)', \$buffer;
+   print {$ofh} qq{
+<html>
+   </head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+   </head>
+   <body>
+      <h1>Directory for $request_path</h1>
+      <pre>
+
+};
+
+   opendir my $dh, $path or die "opendir(): $OS_ERROR";
+   my @items = sort grep { $_ ne '.' && $_ ne '..' } readdir $dh;
+   closedir $dh;
+   unshift @items, '..' if $request_path ne '/';
+   my ($volume, $dirs) = splitpath($path, 'no-file');
+   for my $file (@items) {
+      my $full_path = catpath($volume, $dirs, $file);
+      $file = decode(utf8 => $file);
+      my $filename = html_text($file);
+      my $uri      = urlencode($file);
+      if (-d $full_path) {
+         $_ .= '/' for $filename, $uri;
+      }
+      print {$ofh} qq{         <a href="$uri">$filename</a>\n};
+   } ## end for my $file (@items)
+   print {$ofh} "
+      </pre>
+   </body>
+</html>
+";
+   close $ofh;
+
+   my $length = do { use bytes; length $buffer };
+
+   open my $ifh, '<', \$buffer;
+   return _serve(
+      $request,
+      {
+         headers => [
+            ['Content-Type'   => 'text/html; charset=utf-8'],
+            ['Content-Length' => $length],
+         ],
+         fh => $ifh,
+      }
+   );
+} ## end sub serve_directory
+
+sub serve_file {
+   my ($request, $path) = @_;
+
+   my @headers = (['Content-Length' => -s $path],);
+
+   if (my $mime_type = guess_mime_type($path)) {
+      push @headers, ['Content-Type' => $mime_type];
+   }
+   else {
+      my ($vol, $dirs, $basename) = splitpath($path);
+      $basename = urlencode($basename);
+      push @headers, ['Content-Type' => 'application/octet-stream'],
+        ['Content-Disposition' => qq{attachment"}];
+   } ## end else [ if (my $mime_type = guess_mime_type...
+
+   open my $ifh, '<', $path;
+   return _serve(
+      $request,
+      {
+         headers => \@headers,
+         fh      => $ifh,
+      }
+   );
+} ## end sub serve_file
+
+sub local_path {
+   my ($path, $volume, @dirs) = @_;
+   my @remote_path = split m{/}, clean_path($path);
+   my $target      = pop @remote_path;
+   my $dirs        = catdir(@dirs, @remote_path);
+   return catpath($volume, $dirs, $target);
+} ## end sub local_path
+
+sub clean_path {
+   my ($path) = @_;
+   my $has_trailing = substr($path, -1, 1) eq '/';
+   my (@chunks, $drop);
+   for my $element (split m{/}, $path) {
+      if ($element eq '..') {
+         $drop++;
+      }
+      elsif ($drop) {
+         pop @chunks;
+         $drop--;
+      }
+      else {
+         push @chunks, $element;
+      }
+   } ## end for my $element (split ...
+   push @chunks, '' if $has_trailing;
+   return join '/', @chunks;
+} ## end sub clean_path
+
+sub urlencode_b {
+   (my $bytes = shift) =~ s{([^-\w.~/])}{'%' . unpack('H*', $1)}gemxs;
+   return $bytes;
+}
+
+sub urldecode_b {
+   (my $bytes = shift) =~ s{%([[:xdigit:]]{2})}{pack('C0H*', $1)}gemxs;
+   return $bytes;
+}
+
+sub urlencode {
+   my ($uri, $encoding) = @_;
+   $encoding ||= 'utf8';
+   return urlencode_b(encode($encoding => $uri));
+}
+
+sub urldecode {
+   my ($euri, $encoding) = @_;
+   $encoding ||= 'utf8';
+   return decode($encoding => urldecode_b($euri));
+}
+
+{
+   my ($chars, %entity_for);
+
+   sub html_text {
+      my ($text) = @_;
+
+      if (!defined $chars) {
+         my $entities = <<'END_OF_ENTITIES';
+& amp
+> gt
+< lt
+" quot
+' apos
+END_OF_ENTITIES
+         %entity_for = map {
+            my ($char, $entity) = split /\s+/;
+            $char => "&$entity;";
+         } split /\n/, $entities;
+         $chars = '[' . join('', keys %entity_for) . ']';
+      } ## end if (!defined $chars)
+
+      $text =~ s{($chars)}{$entity_for{$1}}gemxs;
+
+      return $text;
+   } ## end sub html_text
+}
+
+sub guess_mime_type {
+   my ($path) = @_;
+   my %regex_for = (
+      'image/png'                 => qr{(?imxs:\.png)$},
+      'image/gif'                 => qr{(?imxs:\.gif)$},
+      'image/jpeg'                => qr{(?imxs:\.jpe?g)$},
+      'text/plain; charset=UTF-8' => qr{(?imxs:\.(?:txt|csv|pl|pm|rb))$},
+      'text/html'                 => qr{(?imxs:\.(?:html|htm|xhtml))$},
+      'text/xml'                  => qr{(?imxs:\.(?:xml))$},
+      'application/pdf'           => qr{(?imxs:\.(?:pdf))$},
+      'application/x-gzip'        => qr{(?imxs:\.(?:gz|gzip))$},
+      'application/zip'           => qr{(?imxs:\.(?:zip))$},
+      'application/msword'        => qr{(?imxs:\.(?:doc))$},
+      'application/msexcel'       => qr{(?imxs:\.(?:xls))$},
+      'application/mspowerpoint'  => qr{(?imxs:\.(?:ppt|pps))$},
+   );
+   while (my ($type, $regex) = each %regex_for) {
+      return $type if $path =~ /$regex/;
+   }
+   return;
+} ## end sub guess_mime_type
+
+sub join_headers {
+   my @headers = @_;
+   my %lacks   = (
+      'content-type' => ['Content-Type' => 'application/octet-stream'],
+      'user-agent'   => ['User-Agent'   => 'scar/0.9'],
+   );
+   delete $lacks{lc($_->[0])} for @headers;
+   push @headers, values %lacks;
+   return join "\x0D\x0A",
+     map { join ': ', @$_ } grep { defined $_->[1] } @headers;
+} ## end sub join_headers
+
+sub _serve {
+   my ($request, $response) = @_;
+   my $client = $request->{client};
+   my $CRLF   = "\x0D\x0A";
+
+   my $code = $response->{code} || '200 OK';
+   print {$client} "$request->{version} $code$CRLF";
+
+   my $headers = join_headers(@{$response->{headers}});
+   print {$client} $headers, $CRLF, $CRLF;
+
+   if (my $fh = $response->{fh}) {
+      while ('necessary') {
+         my $buffer;
+         read $fh, $buffer, 4096 or last;
+         print {$client} $buffer;
+      }
+   } ## end if (my $fh = $response...
+} ## end sub _serve
+
+__END__
+
+=head1 NAME
+
+scar - pure-Perl utility to support file transfers via HTTP
+
+=head1 VERSION
+
+Ask the version number to the script itself, calling:
+
+   shell$ scar --version
+
+
+=head1 USAGE
+
+   scar [--usage] [--help] [--man] [--version]
+
+   scar [--host|-h hostname]
+        [--port|-p port]
+        [--root|-r root-directory]
+
+=head1 EXAMPLES
+
+   # serve current directory, dynamic port, any local address
+   me@myserver$ scar
+   server started, you can connect to http://myserver:54321/
+
+   # set a specific port
+   me@myserver$ scar -p 8080
+   server started, you can connect to http://myserver:8080/
+
+   # bind to localhost only, on specific port
+   me@myserver$ scar -p 8080 -h localhost
+   server started, you can connect to http://127.0.0.1:8080/
+
+   # set the path to be served, can be a file or a directory
+   me@myserver$ scar -r shared-stuff.tar.gz
+   server started, you can connect to http://myserver:53412/
+   me@myserver$ scar -r /tmp
+   server started, you can connect to http://myserver:35142/
+
+
+=head1 DESCRIPTION
+
+B<scar> helps you when you want to quickly share a loca directory
+or file with someone remotely, e.g. when you don't want (or can not)
+send it by email.
+
+B<scar> requires that there is the possibility for the remote end
+to set up a TCP connection to your machine, otherwise it's pretty
+dull. This connection might be over a SSH tunnel, anyway, so don't
+feel defeated too early.
+
+The most simple use case is when you want to share all the files
+(and subdirectories) of the directory you're currently in:
+
+   me@myserver$ scar
+   server started, you can connect to http://myserver:54321/
+
+Now you can provide the printed URI to your peer to let her start
+the download.
+
+Note that C<myserver> might be something that is not reachable from
+the outside. If this is the case, you have to substitute C<myserver>
+with an IP address that can be used to reach your machine.
+
+Another popular use case - possibly more than the previous one - is
+when you just want to share a file. In this case you only
+need L<--root|-r>:
+
+   me@myserver$ scar -r shared-stuff.tar.gz
+   server started, you can connect to http://myserver:53412/
+
+The same goes if you want to share a whole directory that is not the
+current one:
+
+   me@myserver$ scar -r /tmp
+   server started, you can connect to http://myserver:35142/
+
+If you have only a limited range of available ports - e.g. because you
+have some firewall in between, or a NAT - you can fix the port instead
+of leaving the dynamic allocation:
+
+   me@myserver$ scar -p 8080
+   server started, you can connect to http://myserver:8080/
+
+Another interesting option is the possibility to set the local address
+where you want to listen, e.g. restrict the access to C<localhost> only:
+
+   me@myserver$ scar -p 8080 -h localhost
+   server started, you can connect to http://127.0.0.1:8080/
+
+This restricts the access only to those that have access to localhost.
+How can this be useful? For example, suppose that both you and your peer
+have access to a shared server, you could set up this:
+
+   me@myserver$ ssh -R 54321:localhost:8080 me@sharedserver
+
+and your peer could do this:
+
+   you@yourserver$ ssh -L 33333:localhost:54321 you@sharedserver
+
+and then, with all this circus going on:
+
+   you@yourserver$ curl http://localhost:33333/
+
+will tunnel the peer's request through her ssh connection to the shared
+server, which will in turn retunnel it through your connection from
+myserver.
+
+In case it's OK you can spare the peer the tunnel and set a bind address
+when connecting:
+
+   me@myserver$ ssh -R public-ip:54321:localhost:8080 me@sharedserver
+
+In this case, the tunnel will instruct the sshd daemon on sharedserver to
+listen to any available address instead of localhost only.
+
+=head1 OPTIONS
+
+=over
+
+=item --help
+
+print a somewhat more verbose help, showing usage, this description of
+the options and some examples from the synopsis.
+
+=item --host|-h hostname
+
+set the hostname to use, otherwise it will bind to any available address.
+
+=item --man
+
+print out the full documentation for the script.
+
+=item --port|-p port
+
+the port this program listens to.
+
+By default the program will select a port automatically.
+
+=item --root|-r path
+
+set the directory or file to serve, by default it is the current directory.
+
+=item --usage
+
+print a concise usage line and exit.
+
+=item --version
+
+print the version of the script.
+
+=back
+
+=head1 DEPENDENCIES
+
+None.
+
+=head1 AUTHOR
+
+Flavio Poletti C<flavio@polettix.it>
+
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2011, Flavio Poletti C<flavio@polettix.it>. All rights reserved.
+
+This script is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself. See L<perlartistic>
+and L<perlgpl>.
+
+Questo script è software libero: potete ridistribuirlo e/o
+modificarlo negli stessi termini di Perl stesso. Vedete anche
+L<perlartistic> e L<perlgpl>.
+
+
+=head1 DISCLAIMER OF WARRANTY
+
+BECAUSE THIS SOFTWARE IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY
+FOR THE SOFTWARE, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN
+OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES
+PROVIDE THE SOFTWARE "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER
+EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE
+ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH
+YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL
+NECESSARY SERVICING, REPAIR, OR CORRECTION.
+
+IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING
+WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR
+REDISTRIBUTE THE SOFTWARE AS PERMITTED BY THE ABOVE LICENCE, BE
+LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL,
+OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE
+THE SOFTWARE (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING
+RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A
+FAILURE OF THE SOFTWARE TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF
+SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGES.
+
+=head1 NEGAZIONE DELLA GARANZIA
+
+Poiché questo software viene dato con una licenza gratuita, non
+c'è alcuna garanzia associata ad esso, ai fini e per quanto permesso
+dalle leggi applicabili. A meno di quanto possa essere specificato
+altrove, il proprietario e detentore del copyright fornisce questo
+software "così com'è" senza garanzia di alcun tipo, sia essa espressa
+o implicita, includendo fra l'altro (senza però limitarsi a questo)
+eventuali garanzie implicite di commerciabilità e adeguatezza per
+uno scopo particolare. L'intero rischio riguardo alla qualità ed
+alle prestazioni di questo software rimane a voi. Se il software
+dovesse dimostrarsi difettoso, vi assumete tutte le responsabilità
+ed i costi per tutti i necessari servizi, riparazioni o correzioni.
+
+In nessun caso, a meno che ciò non sia richiesto dalle leggi vigenti
+o sia regolato da un accordo scritto, alcuno dei detentori del diritto
+di copyright, o qualunque altra parte che possa modificare, o redistribuire
+questo software così come consentito dalla licenza di cui sopra, potrà
+essere considerato responsabile nei vostri confronti per danni, ivi
+inclusi danni generali, speciali, incidentali o conseguenziali, derivanti
+dall'utilizzo o dall'incapacità di utilizzo di questo software. Ciò
+include, a puro titolo di esempio e senza limitarsi ad essi, la perdita
+di dati, l'alterazione involontaria o indesiderata di dati, le perdite
+sostenute da voi o da terze parti o un fallimento del software ad
+operare con un qualsivoglia altro software. Tale negazione di garanzia
+rimane in essere anche se i dententori del copyright, o qualsiasi altra
+parte, è stata avvisata della possibilità di tali danneggiamenti.
+
+Se decidete di utilizzare questo software, lo fate a vostro rischio
+e pericolo. Se pensate che i termini di questa negazione di garanzia
+non si confacciano alle vostre esigenze, o al vostro modo di
+considerare un software, o ancora al modo in cui avete sempre trattato
+software di terze parti, non usatelo. Se lo usate, accettate espressamente
+questa negazione di garanzia e la piena responsabilità per qualsiasi
+tipo di danno, di qualsiasi natura, possa derivarne.
+
+=cut
