@@ -1,6 +1,4 @@
-## NAME
-
-       scar - pure-Perl utility to support file transfers via HTTP
+**scar** is a pure-Perl no-dependency utility to support file transfers via HTTP.
 
 ## USAGE
 
