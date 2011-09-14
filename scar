@@ -53,20 +53,26 @@ print {*STDERR} "server started, you can connect to http://$hostname:",
   $server->sockport(), "/\n";
 
 while (my $client = $server->accept()) {
-   my $request = parse_request($client);
-   my $local_path = local_path($request->{path}, @root);
-   print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
-     $client->peerport(),
-     " [$request->{path}] => [$local_path]\n";
-   if (!-r $local_path) {
-      serve_error($request, '404 Not Found');
-   }
-   elsif (-d $local_path) {
-      serve_directory($request, $local_path);
-   }
-   else {
-      serve_file($request, $local_path);
-   }
+   eval {
+      my $request = parse_request($client);
+      my $local_path = local_path($request->{path}, @root);
+      print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
+        $client->peerport(),
+        " [$request->{path}] => [$local_path]\n";
+      if (!-r $local_path) {
+         serve_error($request, '404 Not Found');
+      }
+      elsif (-d $local_path) {
+         serve_directory($request, $local_path);
+      }
+      else {
+         serve_file($request, $local_path);
+      }
+      1;
+     }
+     or do {
+      print {*STDERR} "an error occurred: $EVAL_ERROR";
+     }
 } ## end while (my $client = $server...
 
 sub parse_request {
