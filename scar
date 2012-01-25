@@ -58,7 +58,8 @@ print {*STDERR} "server started, you can connect to http://$hostname:",
 
 while (my $client = $server->accept()) {
    eval {
-      my $request = parse_request($client);
+      my $request = parse_request($client)
+         or die "empty request, ignoring\n";
       my $local_path = local_path($request->{path}, @root);
       print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
         $client->peerport(),
@@ -81,7 +82,10 @@ while (my $client = $server->accept()) {
 
 sub parse_request {
    my ($client) = @_;
-   (my $preamble = <$client>) =~ s/\x0D\x0A\z//mxs;
+   my $preamble = <$client>;
+   return unless defined $preamble;
+
+   $preamble =~ s/\x0D\x0A\z//mxs;
    my ($method, $path, $version) = split /\s+/, $preamble;
 
    my (@headers);
