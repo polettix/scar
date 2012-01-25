@@ -12,7 +12,10 @@ use File::Spec::Functions qw< splitpath splitdir catdir catpath >;
 use Sys::Hostname qw< hostname >;
 use Encode qw< encode decode >;
 
-my %config = (root => cwd(),);
+my %config = (
+   root => cwd(),
+   listen => 7,
+);
 GetOptions(
    \%config,
    qw(
@@ -20,6 +23,7 @@ GetOptions(
      host|h=s
      port|p=i
      root|r=s
+     listen|l=i
      )
 ) or pod2usage(-verbose => 99, -sections => 'USAGE');
 pod2usage(message => "$0 $VERSION", -verbose => 99, -sections => ' ')
@@ -41,7 +45,7 @@ my %name_for = (
 my %params = (
    ReuseAddr => 1,
    Proto     => 'tcp',
-   Listen    => 2,
+   Listen    => $config{listen},
    map { $name_for{$_} => $config{$_} }
      grep { exists $config{$_} } qw< host port >
 );
