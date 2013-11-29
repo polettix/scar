@@ -213,19 +213,16 @@ sub local_path {
 
 sub clean_path {
    my ($path) = @_;
+   $path =~ s{//+}{/}gmxs;
    my $has_trailing = substr($path, -1, 1) eq '/';
    my (@chunks, $drop);
    for my $element (split m{/}, $path) {
       if ($element eq '..') {
-         $drop++;
-      }
-      elsif ($drop) {
-         pop @chunks;
-         $drop--;
-      }
+         pop @chunks unless (@chunks == 1 && $chunks[0] eq '');
+      }  
       else {
          push @chunks, $element;
-      }
+      }  
    } ## end for my $element (split ...
    push @chunks, '' if $has_trailing;
    return join '/', @chunks;
@@ -509,7 +506,7 @@ This script is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself. See L<perlartistic>
 and L<perlgpl>.
 
-Questo script è software libero: potete ridistribuirlo e/o
+Questo script ï¿½ software libero: potete ridistribuirlo e/o
 modificarlo negli stessi termini di Perl stesso. Vedete anche
 L<perlartistic> e L<perlgpl>.
 
@@ -539,38 +536,38 @@ SUCH DAMAGES.
 
 =head1 NEGAZIONE DELLA GARANZIA
 
-Poiché questo software viene dato con una licenza gratuita, non
-c'è alcuna garanzia associata ad esso, ai fini e per quanto permesso
+Poichï¿½ questo software viene dato con una licenza gratuita, non
+c'ï¿½ alcuna garanzia associata ad esso, ai fini e per quanto permesso
 dalle leggi applicabili. A meno di quanto possa essere specificato
 altrove, il proprietario e detentore del copyright fornisce questo
-software "così com'è" senza garanzia di alcun tipo, sia essa espressa
-o implicita, includendo fra l'altro (senza però limitarsi a questo)
-eventuali garanzie implicite di commerciabilità e adeguatezza per
-uno scopo particolare. L'intero rischio riguardo alla qualità ed
+software "cosï¿½ com'ï¿½" senza garanzia di alcun tipo, sia essa espressa
+o implicita, includendo fra l'altro (senza perï¿½ limitarsi a questo)
+eventuali garanzie implicite di commerciabilitï¿½ e adeguatezza per
+uno scopo particolare. L'intero rischio riguardo alla qualitï¿½ ed
 alle prestazioni di questo software rimane a voi. Se il software
-dovesse dimostrarsi difettoso, vi assumete tutte le responsabilità
+dovesse dimostrarsi difettoso, vi assumete tutte le responsabilitï¿½
 ed i costi per tutti i necessari servizi, riparazioni o correzioni.
 
-In nessun caso, a meno che ciò non sia richiesto dalle leggi vigenti
+In nessun caso, a meno che ciï¿½ non sia richiesto dalle leggi vigenti
 o sia regolato da un accordo scritto, alcuno dei detentori del diritto
 di copyright, o qualunque altra parte che possa modificare, o redistribuire
-questo software così come consentito dalla licenza di cui sopra, potrà
+questo software cosï¿½ come consentito dalla licenza di cui sopra, potrï¿½
 essere considerato responsabile nei vostri confronti per danni, ivi
 inclusi danni generali, speciali, incidentali o conseguenziali, derivanti
-dall'utilizzo o dall'incapacità di utilizzo di questo software. Ciò
+dall'utilizzo o dall'incapacitï¿½ di utilizzo di questo software. Ciï¿½
 include, a puro titolo di esempio e senza limitarsi ad essi, la perdita
 di dati, l'alterazione involontaria o indesiderata di dati, le perdite
 sostenute da voi o da terze parti o un fallimento del software ad
 operare con un qualsivoglia altro software. Tale negazione di garanzia
 rimane in essere anche se i dententori del copyright, o qualsiasi altra
-parte, è stata avvisata della possibilità di tali danneggiamenti.
+parte, ï¿½ stata avvisata della possibilitï¿½ di tali danneggiamenti.
 
 Se decidete di utilizzare questo software, lo fate a vostro rischio
 e pericolo. Se pensate che i termini di questa negazione di garanzia
 non si confacciano alle vostre esigenze, o al vostro modo di
 considerare un software, o ancora al modo in cui avete sempre trattato
 software di terze parti, non usatelo. Se lo usate, accettate espressamente
-questa negazione di garanzia e la piena responsabilità per qualsiasi
+questa negazione di garanzia e la piena responsabilitï¿½ per qualsiasi
 tipo di danno, di qualsiasi natura, possa derivarne.
 
 =cut
