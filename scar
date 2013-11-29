@@ -5,7 +5,7 @@ use Carp;
 use Pod::Usage qw( pod2usage );
 use Getopt::Long qw( :config gnu_getopt );
 use English qw( -no_match_vars );
-my $VERSION = '0.0.1';
+my $VERSION = '0.0.2';
 use IO::Socket::INET;
 use Cwd qw< cwd >;
 use File::Spec::Functions qw< splitpath splitdir catdir catpath >;
@@ -306,7 +306,7 @@ sub join_headers {
    my @headers = @_;
    my %lacks   = (
       'content-type' => ['Content-Type' => 'application/octet-stream'],
-      'user-agent'   => ['User-Agent'   => 'scar/0.9'],
+      'user-agent'   => ['User-Agent'   => "scar/$VERSION"],
    );
    delete $lacks{lc($_->[0])} for @headers;
    push @headers, values %lacks;
