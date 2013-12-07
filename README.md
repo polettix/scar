@@ -30,7 +30,7 @@
 
 ## DESCRIPTION
 
-**scar** helps you when you want to quickly share a loca directory or file
+**scar** helps you when you want to quickly share a local directory or file
 with someone remotely, e.g. when you don’t want (or can not) send it by
 email.
 
