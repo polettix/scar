@@ -187,10 +187,8 @@ sub serve_file {
       push @headers, ['Content-Type' => $mime_type];
    }
    else {
-      my ($vol, $dirs, $basename) = splitpath($path);
-      $basename = urlencode($basename);
       push @headers, ['Content-Type' => 'application/octet-stream'],
-        ['Content-Disposition' => qq{attachment"}];
+        ['Content-Disposition' => 'attachment'];
    } ## end else [ if (my $mime_type = guess_mime_type...
 
    open my $ifh, '<', $path;
