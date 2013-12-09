@@ -13,7 +13,7 @@ use Sys::Hostname qw< hostname >;
 use Encode qw< encode decode >;
 
 my %config = (
-   root => cwd(),
+   root   => cwd(),
    listen => 7,
 );
 GetOptions(
@@ -59,7 +59,7 @@ print {*STDERR} "server started, you can connect to http://$hostname:",
 while (my $client = $server->accept()) {
    eval {
       my $request = parse_request($client)
-         or die "empty request, ignoring\n";
+        or die "empty request, ignoring\n";
       my $local_path = local_path($request->{path}, @root);
       print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
         $client->peerport(),
@@ -74,11 +74,10 @@ while (my $client = $server->accept()) {
          serve_file($request, $local_path);
       }
       1;
-     }
-     or do {
+   } or do {
       print {*STDERR} "an error occurred: $EVAL_ERROR";
      }
-} ## end while (my $client = $server...
+} ## end while (my $client = $server...)
 
 sub parse_request {
    my ($client) = @_;
@@ -113,13 +112,12 @@ sub parse_request {
 
 sub serve_error {
    my ($request, $code) = @_;
-   open my $fh, '<', \$code;
    return _serve(
       $request,
       {
-         code    => $code,
-         headers => [['Content-Type' => "text/plain"]],
-         fh      => $fh,
+         code     => $code,
+         headers  => [['Content-Type' => "text/plain"]],
+         iterator => string_iterator($code),
       }
    );
 } ## end sub serve_error
@@ -165,7 +163,6 @@ sub serve_directory {
 
    my $length = do { use bytes; length $buffer };
 
-   open my $ifh, '<', \$buffer;
    return _serve(
       $request,
       {
@@ -173,15 +170,16 @@ sub serve_directory {
             ['Content-Type'   => 'text/html; charset=utf-8'],
             ['Content-Length' => $length],
          ],
-         fh => $ifh,
+         iterator => string_iterator($buffer),
       }
    );
 } ## end sub serve_directory
 
-sub serve_file {
+sub serve_file_whole {
    my ($request, $path) = @_;
 
-   my @headers = (['Content-Length' => -s $path],);
+   my $length = -s $path;
+   my @headers = (['Content-Length' => $length],);
 
    if (my $mime_type = guess_mime_type($path)) {
       push @headers, ['Content-Type' => $mime_type];
@@ -189,17 +187,141 @@ sub serve_file {
    else {
       push @headers, ['Content-Type' => 'application/octet-stream'],
         ['Content-Disposition' => 'attachment'];
-   } ## end else [ if (my $mime_type = guess_mime_type...
+   }
 
    open my $ifh, '<', $path;
    return _serve(
       $request,
       {
-         headers => \@headers,
-         fh      => $ifh,
+         headers  => \@headers,
+         iterator => filehandle_range_iterator($ifh, 0, $length),
       }
    );
+} ## end sub serve_file_whole
+
+sub serve_file_singlerange {
+   my ($request, $path, $range) = @_;
+
+   my ($start, $count) = @$range;
+   my $stop   = $start + $count;
+   my $length = -s $path;
+
+   my @headers = (
+      ['Content-Length' => $count],
+      ['Content-Range'  => "$start-$stop/$length"],
+   );
+
+   if (my $mime_type = guess_mime_type($path)) {
+      push @headers, ['Content-Type' => $mime_type];
+   }
+   else {
+      push @headers, ['Content-Type' => 'application/octet-stream'],
+        ['Content-Disposition' => 'attachment'];
+   }
+
+   open my $ifh, '<', $path;
+   return _serve(
+      $request,
+      {
+         code     => '206 Partial Content',
+         headers  => \@headers,
+         iterator => filehandle_range_iterator($ifh, $start, $count),
+      }
+   );
+} ## end sub serve_file_singlerange
+
+sub string_iterator {
+   my ($string) = @_;
+   return sub {
+      (my $tmp, $string) = ($string, '');
+      return $tmp;
+     }
+} ## end sub string_iterator
+
+sub filehandle_range_iterator {
+   my ($fh, $start, $count) = @_;
+   seek $fh, $start, 0;
+   return sub {
+      return '' unless $count;
+      my $buffer;
+      my $howmany = $count > 4096 ? 4096 : $count;
+      my $read = read $fh, $buffer, $howmany
+        or die "read(): $OS_ERROR\n";
+      $count -= $read;
+      return $buffer;
+     }
+} ## end sub filehandle_range_iterator
+
+sub file_ranges_iterator {
+   my ($path, @ranges) = @_;
+   open my $fh, '<', $path;
+   my $it;
+   return sub {
+      while ($it || @ranges) {
+         $it ||= filehandle_range_iterator($fh, @{shift @ranges});
+         my $chunk = $it->();
+         return $chunk if length $chunk;
+         $it = undef;
+      } ## end while ($it || @ranges)
+      return '';
+     }
+} ## end sub file_ranges_iterator
+
+sub serve_file {
+   my ($request, $path) = @_;
+   my @ranges = get_header($request, 'Range')
+     or return serve_file_whole($request, $path);
+   @ranges = resolve_ranges($path, @ranges)
+     or
+     return serve_error($request, '416 Requested Range Not Satisfiable');
+   return serve_file_whole($request, $path) if @ranges > 1;
+   return serve_file_singlerange($request, $path, $ranges[0]);
 } ## end sub serve_file
+
+sub resolve_ranges {
+   my $path   = shift;
+   my $length = -s $path;
+   my @retval = map {
+      my ($unit, $ranges) = m{\A (.*?) \s* = \s* (.*?) \s*\z}mxs
+        or return;
+      $unit eq 'bytes' or return;
+      map {
+         my ($start, $stop) = m{\A(\d*)-(\d*)\z}mxs
+           or return;
+
+         my $howmany;
+         if (length($start)) {
+            return if $start >= $length;
+            if (length $stop) {
+               return if $start > $stop;
+               $stop = $length - 1 if $stop > $length - 1;
+            }
+            else {
+               $stop = $length - 1;
+            }
+            $howmany = $stop - $start + 1;
+         } ## end if (length($start))
+         elsif (length $stop) {
+            $howmany = $stop > $length ? $length : $stop;
+            $start = $length - $howmany;
+         }
+         else {
+            return;
+         }
+
+         warn "$start for $howmany\n";
+         [$start, $howmany];
+      } split /\s*,\s*/, $ranges;
+   } @_;
+   return @retval;
+} ## end sub resolve_ranges
+
+sub get_header {
+   my ($request, $header) = @_;
+   $header = lc($header);
+   return map { $_->[1] }
+     grep { $header eq lc($_->[0]) } @{$request->{headers}};
+} ## end sub get_header
 
 sub local_path {
    my ($path, $volume, @dirs) = @_;
@@ -217,11 +339,11 @@ sub clean_path {
    for my $element (split m{/}, $path) {
       if ($element eq '..') {
          pop @chunks unless (@chunks == 1 && $chunks[0] eq '');
-      }  
-      elsif ($element ne '.') { # just ignore references to same dir
+      }
+      elsif ($element ne '.') {    # just ignore references to same dir
          push @chunks, $element;
-      }  
-   } ## end for my $element (split ...
+      }
+   } ## end for my $element (split ...)
    push @chunks, '' if $has_trailing;
    return join '/', @chunks;
 } ## end sub clean_path
@@ -323,13 +445,13 @@ sub _serve {
    my $headers = join_headers(@{$response->{headers}});
    print {$client} $headers, $CRLF, $CRLF;
 
-   if (my $fh = $response->{fh}) {
+   if (my $it = $response->{iterator}) {
       while ('necessary') {
-         my $buffer;
-         read $fh, $buffer, 4096 or last;
-         print {$client} $buffer;
+         my $chunk = $it->();
+         last unless length $chunk;
+         print {$client} $chunk;
       }
-   } ## end if (my $fh = $response...
+   } ## end if (my $it = $response...)
 } ## end sub _serve
 
 __END__
