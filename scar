@@ -5,7 +5,7 @@ use Carp;
 use Pod::Usage qw( pod2usage );
 use Getopt::Long qw( :config gnu_getopt );
 use English qw( -no_match_vars );
-my $VERSION = '0.0.2';
+my $VERSION = '0.0.3';
 use IO::Socket::INET;
 use IO::Select;
 use Cwd qw< cwd >;
@@ -14,14 +14,16 @@ use Sys::Hostname qw< hostname >;
 use Encode qw< encode decode >;
 
 my %config = (
-   listen => 7,
-   root   => cwd(),
+   debug   => undef,
+   listen  => 7,
+   root    => cwd(),
    timeout => 0.1,
 );
 GetOptions(
    \%config,
    qw(
      usage! help! man! version!
+     debug|d!
      host|h=s
      listen|l=i
      port|p=i
@@ -78,9 +80,16 @@ while (my $client = $server->accept()) {
       }
       1;
    } or do {
-      print {*STDERR} "an error occurred: $EVAL_ERROR" unless ref $EVAL_ERROR;
+      my $error;
+      if (ref $EVAL_ERROR) {
+         $error = $EVAL_ERROR->[0] if $config{debug};
+      }
+      else {
+         $error = $EVAL_ERROR;
+      }
+      print {*STDERR} "an error occurred: $error" if defined $error;
    };
-   $client->shutdown(2) or warn "shutdown(): $OS_ERROR";
+   $client->shutdown(2) or print {*STDERR} "shutdown(): $OS_ERROR\n";
 } ## end while (my $client = $server...)
 
 sub check_data {
