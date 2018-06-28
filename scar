@@ -64,29 +64,20 @@ print {*STDERR} "server started, you can connect to http://$hostname:",
 while (my $client = $server->accept()) {
    eval {
       my $request = parse_request($client)
-        or die ["empty request from " . $client->peerhost . ':' . $client->peerport . ", ignoring\n"];
+        or die ["empty request from " . $client->peerhost . ':' .
+                $client->peerport . ", ignoring\n"];
       my $local_path = local_path($request->{path}, @root);
       print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
         $client->peerport(),
         " [$request->{path}] => [$local_path]\n";
-      if (!-r $local_path) {
-         serve_error($request, '404 Not Found');
-      }
-      elsif (-d $local_path) {
-         serve_directory($request, $local_path);
-      }
-      else {
-         serve_file($request, $local_path);
-      }
+      if (!-r $local_path)   { serve_error($request, '404 Not Found') }
+      elsif (-d $local_path) { serve_directory($request, $local_path) }
+      else                   { serve_file($request, $local_path); }
       1;
    } or do {
       my $error;
-      if (ref $EVAL_ERROR) {
-         $error = $EVAL_ERROR->[0] if $config{debug};
-      }
-      else {
-         $error = $EVAL_ERROR;
-      }
+      if (ref $EVAL_ERROR) { $error = $EVAL_ERROR->[0] if $config{debug} }
+      else                 { $error = $EVAL_ERROR }
       print {*STDERR} "an error occurred: $error" if defined $error;
    };
    $client->shutdown(2) or print {*STDERR} "shutdown(): $OS_ERROR\n";
