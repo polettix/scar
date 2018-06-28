@@ -7,23 +7,26 @@ use Getopt::Long qw( :config gnu_getopt );
 use English qw( -no_match_vars );
 my $VERSION = '0.0.2';
 use IO::Socket::INET;
+use IO::Select;
 use Cwd qw< cwd >;
 use File::Spec::Functions qw< splitpath splitdir catdir catpath >;
 use Sys::Hostname qw< hostname >;
 use Encode qw< encode decode >;
 
 my %config = (
-   root   => cwd(),
    listen => 7,
+   root   => cwd(),
+   timeout => 0.1,
 );
 GetOptions(
    \%config,
    qw(
      usage! help! man! version!
      host|h=s
+     listen|l=i
      port|p=i
      root|r=s
-     listen|l=i
+     timeout|t=s
      )
 ) or pod2usage(-verbose => 99, -sections => 'USAGE');
 pod2usage(message => "$0 $VERSION", -verbose => 99, -sections => ' ')
@@ -59,7 +62,7 @@ print {*STDERR} "server started, you can connect to http://$hostname:",
 while (my $client = $server->accept()) {
    eval {
       my $request = parse_request($client)
-        or die "empty request, ignoring\n";
+        or die ["empty request from " . $client->peerhost . ':' . $client->peerport . ", ignoring\n"];
       my $local_path = local_path($request->{path}, @root);
       print {*STDERR} "$request->{method} from ", $client->peerhost(), ':',
         $client->peerport(),
@@ -75,12 +78,20 @@ while (my $client = $server->accept()) {
       }
       1;
    } or do {
-      print {*STDERR} "an error occurred: $EVAL_ERROR";
-     }
+      print {*STDERR} "an error occurred: $EVAL_ERROR" unless ref $EVAL_ERROR;
+   };
+   $client->shutdown(2) or warn "shutdown(): $OS_ERROR";
 } ## end while (my $client = $server...)
+
+sub check_data {
+   my ($client) = @_;
+   return IO::Select->new($client)->can_read($config{timeout});
+}
 
 sub parse_request {
    my ($client) = @_;
+   return if $config{timeout} > 0 && !check_data($client);
+
    my $preamble = <$client>;
    return unless defined $preamble;
 
